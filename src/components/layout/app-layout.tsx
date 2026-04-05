@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useWikiStore } from "@/stores/wiki-store"
 import { listDirectory } from "@/commands/fs"
 import { IconSidebar } from "./icon-sidebar"
-import { FileTree } from "./file-tree"
+import { SidebarPanel } from "./sidebar-panel"
 import { ContentArea } from "./content-area"
 import { PreviewPanel } from "./preview-panel"
 import { ActivityPanel } from "./activity-panel"
@@ -82,7 +82,7 @@ export function AppLayout({ onSwitchProject }: AppLayoutProps) {
           style={{ width: leftWidth }}
         >
           <div className="flex-1 overflow-hidden">
-            <FileTree />
+            <SidebarPanel />
           </div>
           <ActivityPanel />
         </div>
