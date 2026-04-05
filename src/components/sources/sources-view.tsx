@@ -4,7 +4,7 @@ import { Plus, FileText, RefreshCw, BookOpen, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useWikiStore } from "@/stores/wiki-store"
-import { copyFile, listDirectory, readFile, writeFile, deleteFile, findRelatedWikiPages } from "@/commands/fs"
+import { copyFile, listDirectory, readFile, writeFile, deleteFile, findRelatedWikiPages, preprocessFile } from "@/commands/fs"
 import type { FileNode } from "@/types/wiki"
 import { startIngest, autoIngest } from "@/lib/ingest"
 
@@ -80,11 +80,15 @@ export function SourcesView() {
     setImporting(true)
     const paths = Array.isArray(selected) ? selected : [selected]
 
+    const importedPaths: string[] = []
     for (const sourcePath of paths) {
       const fileName = sourcePath.split("/").pop() || sourcePath.split("\\").pop() || "unknown"
       const destPath = `${project.path}/raw/sources/${fileName}`
       try {
         await copyFile(sourcePath, destPath)
+        importedPaths.push(destPath)
+        // Pre-process file (extract text from PDF, etc.) for instant preview later
+        preprocessFile(destPath).catch(() => {})
       } catch (err) {
         console.error(`Failed to import ${fileName}:`, err)
       }
@@ -95,11 +99,10 @@ export function SourcesView() {
 
     // Auto-ingest each imported file (runs in background, progress shown in activity panel)
     if (llmConfig.apiKey || llmConfig.provider === "ollama") {
-      for (const sourcePath of paths) {
-        const fileName = sourcePath.split("/").pop() || sourcePath.split("\\").pop() || "unknown"
-        const destPath = `${project.path}/raw/sources/${fileName}`
+      for (const destPath of importedPaths) {
+        const name = destPath.split("/").pop() ?? destPath
         autoIngest(project.path, destPath, llmConfig).catch((err) =>
-          console.error(`Failed to auto-ingest ${fileName}:`, err)
+          console.error(`Failed to auto-ingest ${name}:`, err)
         )
       }
     }

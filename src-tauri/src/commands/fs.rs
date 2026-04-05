@@ -13,9 +13,64 @@ pub fn read_file(path: String) -> Result<String, String> {
         .to_lowercase();
 
     match ext.as_str() {
-        "pdf" => extract_pdf_text(&path),
+        "pdf" => {
+            // Check for pre-processed cache first
+            if let Some(cached) = read_cache(p) {
+                return Ok(cached);
+            }
+            extract_pdf_text(&path)
+        }
         _ => fs::read_to_string(&path)
             .map_err(|e| format!("Failed to read file '{}': {}", path, e)),
+    }
+}
+
+/// Pre-process a file and cache the extracted text.
+/// Called at import time so previews are instant later.
+#[tauri::command]
+pub fn preprocess_file(path: String) -> Result<String, String> {
+    let p = Path::new(&path);
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let text = match ext.as_str() {
+        "pdf" => extract_pdf_text(&path)?,
+        _ => return Ok("no preprocessing needed".to_string()),
+    };
+
+    // Write cache
+    let cache_path = cache_path_for(p);
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    fs::write(&cache_path, &text)
+        .map_err(|e| format!("Failed to write cache: {}", e))?;
+
+    Ok(text)
+}
+
+fn cache_path_for(original: &Path) -> std::path::PathBuf {
+    let parent = original.parent().unwrap_or(Path::new("."));
+    let cache_dir = parent.join(".cache");
+    let file_name = original
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    cache_dir.join(format!("{}.txt", file_name))
+}
+
+fn read_cache(original: &Path) -> Option<String> {
+    let cache_path = cache_path_for(original);
+    // Only use cache if it's newer than the original
+    let original_modified = fs::metadata(original).ok()?.modified().ok()?;
+    let cache_modified = fs::metadata(&cache_path).ok()?.modified().ok()?;
+    if cache_modified >= original_modified {
+        fs::read_to_string(&cache_path).ok()
+    } else {
+        None
     }
 }
 
