@@ -28,6 +28,8 @@ tauri-plugin-dialog = "2.7.0"
 pdf-extract = "0.10.0"
 tauri-plugin-store = "2.4.2"
 zip = "2"
+calamine = "0.34.0"
+docx-rs = "0.4.20"
 
 [profile.release]
 codegen-units = 1

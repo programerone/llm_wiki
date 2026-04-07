@@ -2,6 +2,8 @@ use std::fs;
 use std::io::Read as IoRead;
 use std::path::Path;
 
+use calamine::{Reader, open_workbook_auto, Data};
+
 use crate::types::wiki::FileNode;
 
 /// Known binary formats that need special extraction
@@ -117,17 +119,153 @@ fn extract_pdf_text(path: &str) -> Result<String, String> {
 
 /// Extract text from Office Open XML formats, converting to Markdown.
 fn extract_office_text(path: &str, ext: &str) -> Result<String, String> {
+    // Spreadsheets: use calamine (supports xlsx, xls, ods)
+    if matches!(ext, "xlsx" | "xls" | "ods") {
+        return extract_spreadsheet(path);
+    }
+
+    // DOCX: use docx-rs library for proper parsing
+    if ext == "docx" {
+        return extract_docx_with_library(path);
+    }
+
+    // PPTX and ODF: use ZIP-based parsing
     let file = fs::File::open(path)
         .map_err(|e| format!("Failed to open '{}': {}", path, e))?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| format!("Failed to read ZIP archive '{}': {}", path, e))?;
 
     match ext {
-        "docx" => extract_docx_markdown(&mut archive),
         "pptx" => extract_pptx_markdown(&mut archive),
-        "xlsx" => extract_xlsx_markdown(&mut archive),
-        "odt" | "ods" | "odp" => extract_odf_text(&mut archive),
+        "odt" | "odp" => extract_odf_text(&mut archive),
         _ => Ok("[Unsupported format]".to_string()),
+    }
+}
+
+/// Extract DOCX using docx-rs library for proper structural parsing.
+fn extract_docx_with_library(path: &str) -> Result<String, String> {
+    let bytes = fs::read(path).map_err(|e| format!("Failed to read DOCX '{}': {}", path, e))?;
+    let docx = docx_rs::read_docx(&bytes)
+        .map_err(|e| format!("Failed to parse DOCX '{}': {:?}", path, e))?;
+
+    let mut result = String::new();
+
+    for child in docx.document.children {
+        match child {
+            docx_rs::DocumentChild::Paragraph(para) => {
+                let mut para_text = String::new();
+                let mut is_heading = false;
+                let mut heading_level: u8 = 1;
+
+                // Check paragraph style for headings
+                if let Some(style) = &para.property.style {
+                    let style_val = &style.val;
+                    if style_val.contains("Heading") || style_val.contains("heading") {
+                        is_heading = true;
+                        // Extract level number
+                        for ch in style_val.chars() {
+                            if ch.is_ascii_digit() {
+                                heading_level = ch.to_digit(10).unwrap_or(1) as u8;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Check for list (numbering)
+                let is_list = para.property.numbering_property.is_some();
+
+                // Extract text from runs
+                for child in &para.children {
+                    if let docx_rs::ParagraphChild::Run(run) = child {
+                        let is_bold = run.run_property.bold.is_some();
+                        let is_italic = run.run_property.italic.is_some();
+
+                        for run_child in &run.children {
+                            if let docx_rs::RunChild::Text(text) = run_child {
+                                let t = &text.text;
+                                if is_bold && is_italic {
+                                    para_text.push_str(&format!("***{}***", t));
+                                } else if is_bold {
+                                    para_text.push_str(&format!("**{}**", t));
+                                } else if is_italic {
+                                    para_text.push_str(&format!("*{}*", t));
+                                } else {
+                                    para_text.push_str(t);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let text = para_text.trim().to_string();
+                if text.is_empty() { continue; }
+
+                if is_heading {
+                    let prefix = "#".repeat(heading_level as usize);
+                    result.push_str(&format!("{} {}\n\n", prefix, text));
+                } else if is_list {
+                    result.push_str(&format!("- {}\n", text));
+                } else {
+                    result.push_str(&text);
+                    result.push_str("\n\n");
+                }
+            }
+            docx_rs::DocumentChild::Table(table) => {
+                let mut rows: Vec<Vec<String>> = Vec::new();
+                for row in &table.rows {
+                    if let docx_rs::TableChild::TableRow(tr) = row {
+                        let mut cells: Vec<String> = Vec::new();
+                        for cell in &tr.cells {
+                            if let docx_rs::TableRowChild::TableCell(tc) = cell {
+                                let mut cell_text = String::new();
+                                for child in &tc.children {
+                                    if let docx_rs::TableCellContent::Paragraph(para) = child {
+                                        for pchild in &para.children {
+                                            if let docx_rs::ParagraphChild::Run(run) = pchild {
+                                                for rc in &run.children {
+                                                    if let docx_rs::RunChild::Text(t) = rc {
+                                                        cell_text.push_str(&t.text);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                cells.push(cell_text.trim().replace('|', "\\|"));
+                            }
+                        }
+                        rows.push(cells);
+                    }
+                }
+                if !rows.is_empty() {
+                    let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+                    for (i, row) in rows.iter().enumerate() {
+                        let mut padded = row.clone();
+                        padded.resize(max_cols, String::new());
+                        result.push_str("| ");
+                        result.push_str(&padded.join(" | "));
+                        result.push_str(" |\n");
+                        if i == 0 {
+                            result.push('|');
+                            for _ in 0..max_cols { result.push_str(" --- |"); }
+                            result.push('\n');
+                        }
+                    }
+                    result.push('\n');
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if result.trim().is_empty() {
+        // Fallback to ZIP-based extraction
+        let file = fs::File::open(path).map_err(|e| e.to_string())?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+        extract_docx_markdown(&mut archive)
+    } else {
+        Ok(result)
     }
 }
 
@@ -403,131 +541,82 @@ fn extract_pptx_markdown(archive: &mut zip::ZipArchive<fs::File>) -> Result<Stri
     }
 }
 
-/// Extract XLSX to Markdown tables.
-fn extract_xlsx_markdown(archive: &mut zip::ZipArchive<fs::File>) -> Result<String, String> {
-    // Read shared strings first
-    let shared_strings: Vec<String> = match read_zip_file(archive, "xl/sharedStrings.xml") {
-        Some(xml) => {
-            let mut strings = Vec::new();
-            let mut in_t = false;
-            let mut current = String::new();
-            for ch in xml.chars() {
-                if in_t {
-                    if ch == '<' {
-                        strings.push(decode_xml_entities(&current));
-                        current.clear();
-                        in_t = false;
-                    } else {
-                        current.push(ch);
-                    }
-                }
-                // Detect <t> or <t ...>
-                if !in_t && xml[strings.len()..].contains("<t") {
-                    // simplified: just look for <t> tags
-                }
-            }
-            // Better approach: regex-like extraction
-            let mut result_strings = Vec::new();
-            let parts: Vec<&str> = xml.split("<t").collect();
-            for part in parts.iter().skip(1) {
-                if let Some(end) = part.find("</t>") {
-                    let text_part = if let Some(start) = part.find('>') {
-                        &part[start + 1..end]
-                    } else {
-                        &part[..end]
-                    };
-                    result_strings.push(decode_xml_entities(text_part));
-                }
-            }
-            result_strings
-        }
-        None => Vec::new(),
-    };
+/// Extract XLSX/XLS/ODS to Markdown tables using calamine.
+fn extract_xlsx_markdown(_archive: &mut zip::ZipArchive<fs::File>) -> Result<String, String> {
+    // calamine needs the file path, not the archive
+    Err("Use extract_spreadsheet instead".to_string())
+}
 
-    // Read sheet1
-    let sheet_xml = read_zip_file(archive, "xl/worksheets/sheet1.xml")
-        .ok_or_else(|| "No sheet1.xml found".to_string())?;
+/// Extract spreadsheet to Markdown using calamine (supports xlsx, xls, ods).
+fn extract_spreadsheet(path: &str) -> Result<String, String> {
+    let mut workbook = open_workbook_auto(path)
+        .map_err(|e| format!("Failed to open spreadsheet '{}': {}", path, e))?;
 
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    let mut current_row: Vec<String> = Vec::new();
-    let mut cell_type = String::new();
-    let mut cell_value = String::new();
-    let mut in_row = false;
-    let mut in_cell = false;
-    let mut in_value = false;
-
-    let parts: Vec<&str> = sheet_xml.split('<').collect();
-    for part in parts {
-        if part.starts_with("row ") || part.starts_with("row>") {
-            in_row = true;
-            current_row.clear();
-        } else if part.starts_with("/row>") {
-            if !current_row.is_empty() {
-                rows.push(current_row.clone());
-            }
-            in_row = false;
-        } else if in_row && (part.starts_with("c ") || part.starts_with("c>")) {
-            in_cell = true;
-            cell_type.clear();
-            cell_value.clear();
-            if part.contains("t=\"s\"") {
-                cell_type = "s".to_string();
-            }
-        } else if part.starts_with("/c>") {
-            if cell_type == "s" {
-                if let Ok(idx) = cell_value.trim().parse::<usize>() {
-                    current_row.push(shared_strings.get(idx).cloned().unwrap_or_default());
-                } else {
-                    current_row.push(cell_value.trim().to_string());
-                }
-            } else {
-                current_row.push(cell_value.trim().to_string());
-            }
-            in_cell = false;
-        } else if in_cell && part.starts_with("v>") {
-            in_value = true;
-            cell_value.clear();
-        } else if in_cell && part.starts_with("v ") {
-            // <v> with attributes
-            if let Some(pos) = part.find('>') {
-                cell_value = part[pos + 1..].trim_end_matches('/').to_string();
-            }
-        } else if part.starts_with("/v>") {
-            in_value = false;
-        } else if in_value {
-            // text content between tags
-            if let Some(pos) = part.find('>') {
-                cell_value.push_str(&part[pos + 1..]);
-            }
-        }
-    }
-
-    if rows.is_empty() {
-        return Ok("[Could not extract data from XLSX]".to_string());
-    }
-
-    // Convert to Markdown table
     let mut result = String::new();
-    let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let sheet_names = workbook.sheet_names().to_vec();
 
-    for (i, row) in rows.iter().enumerate() {
-        let mut padded = row.clone();
-        padded.resize(max_cols, String::new());
-        result.push_str("| ");
-        result.push_str(&padded.join(" | "));
-        result.push_str(" |\n");
+    for sheet_name in &sheet_names {
+        if let Ok(range) = workbook.worksheet_range(sheet_name) {
+            if range.is_empty() { continue; }
 
-        // Header separator after first row
-        if i == 0 {
-            result.push('|');
-            for _ in 0..max_cols {
-                result.push_str(" --- |");
+            if sheet_names.len() > 1 {
+                result.push_str(&format!("## {}\n\n", sheet_name));
+            }
+
+            let mut rows: Vec<Vec<String>> = Vec::new();
+            let mut max_cols = 0;
+
+            for row in range.rows() {
+                let cells: Vec<String> = row.iter().map(|cell| {
+                    match cell {
+                        Data::Empty => String::new(),
+                        Data::String(s) => s.clone(),
+                        Data::Float(f) => {
+                            if *f == (*f as i64) as f64 {
+                                format!("{}", *f as i64)
+                            } else {
+                                format!("{:.2}", f)
+                            }
+                        }
+                        Data::Int(i) => i.to_string(),
+                        Data::Bool(b) => b.to_string(),
+                        Data::DateTime(dt) => format!("{}", dt),
+                        Data::DateTimeIso(s) => s.clone(),
+                        Data::DurationIso(s) => s.clone(),
+                        Data::Error(e) => format!("ERR:{:?}", e),
+                    }
+                }).collect();
+                if cells.len() > max_cols { max_cols = cells.len(); }
+                rows.push(cells);
+            }
+
+            // Skip empty sheets
+            if rows.is_empty() || max_cols == 0 { continue; }
+
+            for (i, row) in rows.iter().enumerate() {
+                let mut padded = row.clone();
+                padded.resize(max_cols, String::new());
+                // Escape pipe characters in cell values
+                let escaped: Vec<String> = padded.iter().map(|c| c.replace('|', "\\|")).collect();
+                result.push_str("| ");
+                result.push_str(&escaped.join(" | "));
+                result.push_str(" |\n");
+
+                if i == 0 {
+                    result.push('|');
+                    for _ in 0..max_cols { result.push_str(" --- |"); }
+                    result.push('\n');
+                }
             }
             result.push('\n');
         }
     }
 
-    Ok(result)
+    if result.trim().is_empty() {
+        Ok("[Could not extract data from spreadsheet]".to_string())
+    } else {
+        Ok(result)
+    }
 }
 
 /// Extract OpenDocument format text (basic).
