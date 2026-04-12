@@ -21,6 +21,8 @@ export interface IngestTask {
 let queue: IngestTask[] = []
 let processing = false
 let currentProjectPath = ""
+let currentAbortController: AbortController | null = null
+let lastWrittenFiles: string[] = []  // track files written by current ingest for cleanup
 
 // ── Persistence ───────────────────────────────────────────────────────────
 
@@ -129,11 +131,44 @@ export async function retryTask(projectPath: string, taskId: string): Promise<vo
 }
 
 /**
- * Cancel a pending task.
+ * Cancel a pending or processing task.
+ * If processing, aborts the LLM call and cleans up generated files.
  */
 export async function cancelTask(projectPath: string, taskId: string): Promise<void> {
+  const task = queue.find((t) => t.id === taskId)
+  if (!task) return
+
+  if (task.status === "processing") {
+    // Abort the in-progress LLM call
+    if (currentAbortController) {
+      currentAbortController.abort()
+      currentAbortController = null
+    }
+
+    // Clean up any files written by the interrupted ingest
+    if (lastWrittenFiles.length > 0) {
+      const { deleteFile } = await import("@/commands/fs")
+      for (const filePath of lastWrittenFiles) {
+        try {
+          const fullPath = filePath.startsWith("/") ? filePath : `${normalizePath(projectPath)}/${filePath}`
+          await deleteFile(fullPath)
+        } catch {
+          // file may not exist
+        }
+      }
+      console.log(`[Ingest Queue] Cleaned up ${lastWrittenFiles.length} files from cancelled task`)
+      lastWrittenFiles = []
+    }
+
+    processing = false
+  }
+
   queue = queue.filter((t) => t.id !== taskId)
   await saveQueue(projectPath)
+  console.log(`[Ingest Queue] Cancelled: ${task.sourcePath}`)
+
+  // Continue with next task
+  processNext(normalizePath(projectPath))
 }
 
 /**
@@ -230,15 +265,23 @@ async function processNext(projectPath: string): Promise<void> {
 
   console.log(`[Ingest Queue] Processing: ${next.sourcePath} (${queue.filter((t) => t.status === "pending").length} remaining)`)
 
+  // Create abort controller for this task
+  currentAbortController = new AbortController()
+  lastWrittenFiles = []
+
   try {
-    await autoIngest(pp, fullSourcePath, llmConfig, undefined, next.folderContext)
+    const writtenFiles = await autoIngest(pp, fullSourcePath, llmConfig, currentAbortController.signal, next.folderContext)
+    lastWrittenFiles = writtenFiles
 
     // Success: remove from queue
+    currentAbortController = null
+    lastWrittenFiles = []
     queue = queue.filter((t) => t.id !== next.id)
     await saveQueue(pp)
 
     console.log(`[Ingest Queue] Done: ${next.sourcePath}`)
   } catch (err) {
+    currentAbortController = null
     const message = err instanceof Error ? err.message : String(err)
     next.retryCount++
     next.error = message
