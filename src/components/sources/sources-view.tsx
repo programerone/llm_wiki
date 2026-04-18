@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from "react"
-import { open } from "@tauri-apps/plugin-dialog"
-import { invoke } from "@tauri-apps/api/core"
+import { open } from "@/lib/browser-dialog"
 import { Plus, FileText, RefreshCw, BookOpen, Trash2, Folder, ChevronRight, ChevronDown } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useWikiStore } from "@/stores/wiki-store"
-import { copyFile, listDirectory, readFile, writeFile, deleteFile, findRelatedWikiPages, preprocessFile } from "@/commands/fs"
+import { FileUploadButton } from "./file-upload-button"
+import { copyFile, listDirectory, readFile, writeFile, deleteFile, findRelatedWikiPages, preprocessFile, copyDirectory } from "@/commands/fs"
 import type { FileNode } from "@/types/wiki"
 import { startIngest } from "@/lib/ingest"
 import { enqueueIngest, enqueueBatch } from "@/lib/ingest-queue"
@@ -132,10 +132,7 @@ export function SourcesView() {
 
     try {
       // Recursively copy the folder
-      const copiedFiles: string[] = await invoke("copy_directory", {
-        source: selected,
-        destination: destDir,
-      })
+      const copiedFiles: string[] = await copyDirectory(selected, destDir)
 
       console.log(`[Folder Import] Copied ${copiedFiles.length} files from ${folderName}`)
 
@@ -354,6 +351,20 @@ export function SourcesView() {
             <Plus className="mr-1 h-4 w-4" />
             {t("sources.importFolder", "Folder")}
           </Button>
+          {project && (
+            <FileUploadButton
+              projectPath={project.path}
+              onUpload={async (paths) => {
+                await loadSources()
+                if (llmConfig.apiKey || llmConfig.provider === "ollama" || llmConfig.provider === "custom") {
+                  for (const destPath of paths) {
+                    enqueueIngest(normalizePath(project.path), destPath).catch(console.error)
+                  }
+                }
+              }}
+              disabled={importing}
+            />
+          )}
         </div>
       </div>
 
@@ -362,7 +373,7 @@ export function SourcesView() {
           <div className="flex flex-col items-center justify-center gap-3 p-8 text-center text-sm text-muted-foreground">
             <p>{t("sources.noSources")}</p>
             <p>{t("sources.importHint")}</p>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2 justify-center">
               <Button variant="outline" size="sm" onClick={handleImport}>
                 <Plus className="mr-1 h-4 w-4" />
                 {t("sources.importFiles")}
@@ -371,6 +382,21 @@ export function SourcesView() {
                 <Plus className="mr-1 h-4 w-4" />
                 Folder
               </Button>
+              {project && (
+                <FileUploadButton
+                  projectPath={project.path}
+                  onUpload={async (paths) => {
+                    await loadSources()
+                    // Enqueue for ingest if LLM configured
+                    if (llmConfig.apiKey || llmConfig.provider === "ollama" || llmConfig.provider === "custom") {
+                      for (const destPath of paths) {
+                        enqueueIngest(normalizePath(project.path), destPath).catch(console.error)
+                      }
+                    }
+                  }}
+                  disabled={importing}
+                />
+              )}
             </div>
           </div>
         ) : (

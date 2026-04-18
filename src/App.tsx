@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react"
-import { open } from "@tauri-apps/plugin-dialog"
+import { open } from "@/lib/browser-dialog"
 import i18n from "@/i18n"
 import { useWikiStore } from "@/stores/wiki-store"
 import { useReviewStore } from "@/stores/review-store"

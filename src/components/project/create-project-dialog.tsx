@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { open } from "@tauri-apps/plugin-dialog"
+import { open } from "@/lib/browser-dialog"
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog"

@@ -44,3 +44,26 @@ export function getRelativePath(fullPath: string, basePath: string): string {
   }
   return normalFull
 }
+
+/**
+ * Sanitize a path to remove non-printable/binary characters.
+ * Keeps only valid ASCII printable characters and common path chars.
+ */
+export function sanitizePath(p: string): string {
+  // Remove non-printable characters (keep only ASCII 32-126, and common path separators)
+  return p.replace(/[^\x20-\x7E\/\\._-]/g, "")
+}
+
+/**
+ * Get a clean display name from a potentially corrupted path.
+ */
+export function getCleanPathDisplay(p: string): string {
+  const fileName = getFileName(p)
+  // Remove any non-printable chars and clean up
+  return fileName
+    .replace(/[^\x20-\x7E]/g, "") // Remove non-printable
+    .replace(/\.pdf$/i, "")
+    .replace(/[_-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+}

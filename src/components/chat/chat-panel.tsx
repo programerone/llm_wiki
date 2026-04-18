@@ -12,7 +12,7 @@ import { searchWiki } from "@/lib/search"
 import { buildRetrievalGraph, getRelatedNodes } from "@/lib/graph-relevance"
 import { useReviewStore } from "@/stores/review-store"
 import type { FileNode } from "@/types/wiki"
-import { normalizePath, getFileName, getRelativePath } from "@/lib/path-utils"
+import { normalizePath, getFileName, getRelativePath, getCleanPathDisplay, sanitizePath } from "@/lib/path-utils"
 import { detectLanguage } from "@/lib/detect-language"
 
 // Store the page mapping from the last query so SourceFilesBar can show which pages were cited
@@ -273,15 +273,37 @@ export function ChatPanel() {
           await tryAddPage("Overview", `${pp}/wiki/overview.md`, 3)
         }
 
+        // Also include raw sources (uploaded files)
+        const rawSources: Array<{ title: string; path: string; content: string }> = []
+        const rawSourceResults = topSearchResults.filter((r) => r.path.includes("/raw/sources/"))
+        for (const r of rawSourceResults.slice(0, 2)) { // Limit to top 2 raw sources to reduce lag
+          try {
+            // Sanitize the path to remove any binary/encoded characters
+            const cleanPath = sanitizePath(r.path)
+            const content = await readFile(cleanPath)
+            // Clean up the title and path for display
+            const cleanTitle = getCleanPathDisplay(cleanPath)
+            const relativePath = getRelativePath(cleanPath, pp)
+            const truncated = content.length > 4000 ? content.slice(0, 4000) + "\n\n[...truncated...]" : content
+            rawSources.push({ title: cleanTitle, path: relativePath, content: truncated })
+          } catch { /* skip */ }
+        }
+
         const pagesContext = relevantPages.length > 0
           ? relevantPages.map((p, i) =>
               `### [${i + 1}] ${p.title}\nPath: ${p.path}\n\n${p.content}`
             ).join("\n\n---\n\n")
           : "(No wiki pages found)"
 
-        const pageList = relevantPages.map((p, i) =>
-          `[${i + 1}] ${p.title} (${p.path})`
-        ).join("\n")
+        const rawSourcesContext = rawSources.length > 0
+          ? "\n\n## Uploaded Documents\n\n" + rawSources.map((s, i) =>
+              `### [${relevantPages.length + i + 1}] ${s.title}\nPath: ${s.path}\n\n${s.content}`
+            ).join("\n\n---\n\n")
+          : ""
+
+        const pageList = [...relevantPages, ...rawSources.map(s => ({ title: s.title, path: s.path }))]
+          .map((p, i) => `[${i + 1}] ${p.title} (${p.path})`)
+          .join("\n")
 
         systemMessages.push({
           role: "system",
@@ -305,10 +327,14 @@ export function ChatPanel() {
             index ? `## Wiki Index\n${index}` : "",
             relevantPages.length > 0 ? `## Page List\n${pageList}` : "",
             `## Wiki Pages\n\n${pagesContext}`,
+            rawSourcesContext,
           ].filter(Boolean).join("\n"),
         })
 
-        lastQueryPages = relevantPages.map((p) => ({ title: p.title, path: p.path }))
+        lastQueryPages = [
+          ...relevantPages.map((p) => ({ title: p.title, path: p.path })),
+          ...rawSources.map((s) => ({ title: s.title, path: s.path }))
+        ]
         queryRefs = [...lastQueryPages]
       }
 

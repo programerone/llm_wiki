@@ -7,6 +7,7 @@ import { useState, useEffect } from "react"
 import { useTranslation } from "react-i18next"
 import i18n from "@/i18n"
 import { saveLanguage } from "@/lib/project-store"
+import { testOllamaConnection, getOllamaModels, type OllamaModel } from "@/lib/ollama-client"
 
 const PROVIDERS = [
   { value: "openai" as const, label: "OpenAI", models: ["gpt-4o", "gpt-4.1", "gpt-4o-mini"] },
@@ -49,6 +50,9 @@ export function SettingsView() {
   const [embeddingModel, setEmbeddingModel] = useState(embeddingConfig.model)
   const [saved, setSaved] = useState(false)
   const [currentLang, setCurrentLang] = useState(i18n.language)
+  const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([])
+  const [ollamaTestResult, setOllamaTestResult] = useState<{ success: boolean; message: string; gpu?: boolean } | null>(null)
+  const [testingOllama, setTestingOllama] = useState(false)
 
   useEffect(() => {
     setProvider(llmConfig.provider)
@@ -155,14 +159,63 @@ export function SettingsView() {
             )}
 
             {provider === "ollama" && (
-              <div className="space-y-2">
-                <Label htmlFor="ollamaUrl">{t("settings.ollamaUrl")}</Label>
-                <Input
-                  id="ollamaUrl"
-                  value={ollamaUrl}
-                  onChange={(e) => setOllamaUrl(e.target.value)}
-                  placeholder="http://localhost:11434"
-                />
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="ollamaUrl">{t("settings.ollamaUrl")}</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="ollamaUrl"
+                      value={ollamaUrl}
+                      onChange={(e) => setOllamaUrl(e.target.value)}
+                      placeholder="http://localhost:11434"
+                      className="flex-1"
+                    />
+                    <Button
+                      variant="outline"
+                      onClick={async () => {
+                        setTestingOllama(true)
+                        setOllamaTestResult(null)
+                        const result = await testOllamaConnection(ollamaUrl || "http://localhost:11434")
+                        setOllamaTestResult(result)
+                        if (result.success) {
+                          const models = await getOllamaModels(ollamaUrl || "http://localhost:11434")
+                          setOllamaModels(models)
+                        }
+                        setTestingOllama(false)
+                      }}
+                      disabled={testingOllama}
+                    >
+                      {testingOllama ? "Testing..." : "Test Connection"}
+                    </Button>
+                  </div>
+                  {ollamaTestResult && (
+                    <p className={`text-sm ${ollamaTestResult.success ? (ollamaTestResult.gpu ? "text-green-600" : "text-yellow-600") : "text-red-600"}`}>
+                      {ollamaTestResult.message}
+                      {ollamaTestResult.gpu && " ✓ GPU enabled"}
+                    </p>
+                  )}
+                </div>
+
+                {ollamaModels.length > 0 && (
+                  <div className="space-y-2">
+                    <Label>Available Models</Label>
+                    <div className="flex flex-wrap gap-2">
+                      {ollamaModels.map((m) => (
+                        <button
+                          key={m.name}
+                          onClick={() => setModel(m.name)}
+                          className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
+                            model === m.name
+                              ? "border-primary bg-primary text-primary-foreground"
+                              : "border-border hover:bg-accent"
+                          }`}
+                        >
+                          {m.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

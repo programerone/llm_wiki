@@ -21,6 +21,16 @@ export function PreviewPanel() {
     }
 
     const category = getFileCategory(selectedFile)
+    const isPdf = selectedFile.toLowerCase().endsWith(".pdf")
+
+    // For PDFs in browser mode, extract text instead of showing binary
+    if (isPdf) {
+      import("@/lib/browser-ingest")
+        .then(({ extractText }) => extractText(selectedFile))
+        .then(({ text }) => setFileContent(text))
+        .catch(() => setFileContent("[Unable to extract PDF text - file may be encrypted or corrupted]"))
+      return
+    }
 
     if (isBinary(category)) {
       setFileContent("")

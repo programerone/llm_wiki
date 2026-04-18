@@ -1,4 +1,4 @@
-import { convertFileSrc } from "@tauri-apps/api/core"
+import { convertFileSrc } from "@/lib/browser-core"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"

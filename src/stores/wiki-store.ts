@@ -54,10 +54,10 @@ export const useWikiStore = create<WikiState>((set) => ({
   chatExpanded: false,
   activeView: "wiki",
   llmConfig: {
-    provider: "openai",
+    provider: "ollama",
     apiKey: "",
     maxContextSize: 204800,
-    model: "",
+    model: "llama3.2:3b",
     ollamaUrl: "http://localhost:11434",
     customEndpoint: "",
   },
